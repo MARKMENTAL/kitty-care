@@ -3,6 +3,7 @@
  *
  * Compiles with TCC in strict C89 mode:
  *   tcc -std=c89 -Wall -Wextra kitty-conf.c -o kitty-conf
+ *   Or with a typical compiler like GCC
  *
  * Generates a config file for the kitty terminal emulator at
  * ~/.config/kitty/kitty.conf
@@ -28,7 +29,7 @@
 #define MIN_FONT_SIZE   6
 #define MAX_FONT_SIZE   72
 #define DEFAULT_SIZE    12
-#define DEFAULT_OPACITY 0.85
+#define DEFAULT_OPACITY 1
 
 /* ------------------------------------------------------------------ */
 /* Data structures                                                     */
@@ -900,7 +901,7 @@ int main(int argc, char *argv[])
                 break;
             case 7:
                 running = 0;
-                printf("\nGoodbye!\n");
+                printf("\nSayonara, Goodbye!\n");
                 break;
             default:
                 printf("Invalid choice. Please select 1-7.\n");
