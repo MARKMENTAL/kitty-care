@@ -1,5 +1,5 @@
 # Compiler and flags
-CC      := tcc
+CC      := gcc
 CFLAGS  := -std=c89 -Wall -Wextra
 
 SRC     := kitty-conf.c

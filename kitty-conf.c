@@ -20,7 +20,7 @@
 #define MAX_FONTS       500
 #define MAX_FONT_LEN    65
 #define MAX_LINE_LEN    2048
-#define MAX_THEMES      25
+#define MAX_THEMES      34
 #define MAX_PALETTES    14
 #define MAX_INPUT_LEN   256
 #define TEMP_FILE       "/tmp/kitty_conf_fonts.txt"
@@ -203,6 +203,60 @@ static struct Theme themes[MAX_THEMES] = {
         "#cfd8dc", "#455a64",
         { "#455a64", "#546e7a", "#607d8b", "#78909c", "#90a4ae", "#b0bec5", "#cfd8dc", "#eceff1" },
         { "#607d8b", "#78909c", "#90a4ae", "#b0bec5", "#cfd8dc", "#eceff1", "#f5f5f5", "#ffffff" }
+    },
+    {
+        "Lavender Purple on Black",
+        "#c8a2c8", "#000000",
+        { "#000000", "#8b008b", "#9370db", "#ba55d3", "#9932cc", "#8a2be2", "#da70d6", "#dda0dd" },
+        { "#4b0082", "#9400d3", "#a020f0", "#b030b0", "#c040c0", "#d050d0", "#e060e0", "#f070f0" }
+    },
+    {
+        "#d70a53 on Black",
+        "#d70a53", "#000000",
+        { "#000000", "#8b0045", "#a01050", "#b52060", "#ca3070", "#df4080", "#e85090", "#f060a0" },
+        { "#550022", "#6a0033", "#7f0044", "#940055", "#a90066", "#be0077", "#d30088", "#e80099" }
+    },
+    {
+        "Gold on Black",
+        "#ffd700", "#000000",
+        { "#000000", "#8b6914", "#a07d1a", "#b59120", "#caa526", "#dfb92c", "#f0cd32", "#ffe138" },
+        { "#554400", "#6a5500", "#7f6600", "#947700", "#a98800", "#be9900", "#d3aa00", "#e8bb00" }
+    },
+    {
+        "Rose Gold on Black",
+        "#e0bfb8", "#000000",
+        { "#000000", "#8b4557", "#a05060", "#b55b69", "#ca6672", "#df717b", "#e87c84", "#f0878d" },
+        { "#552233", "#6a2d3e", "#7f3849", "#944354", "#a94e5f", "#be596a", "#d36475", "#e86f80" }
+    },
+    {
+        "IBM VGA",
+        "#aaaaaa", "#000000",
+        { "#000000", "#0000aa", "#00aa00", "#00aaaa", "#aa0000", "#aa00aa", "#aa5500", "#aaaaaa" },
+        { "#555555", "#5555ff", "#55ff55", "#55ffff", "#ff5555", "#ff55ff", "#ffff55", "#ffffff" }
+    },
+    {
+        "Miku NT",
+        "#338296", "#1a1a1a",
+        { "#1a1a1a", "#e43d82", "#89cdc6", "#338296", "#338296", "#e43d82", "#89cdc6", "#fef5f7" },
+        { "#3a3a3a", "#f060a0", "#a0e0d8", "#4a9aad", "#4a9aad", "#f060a0", "#a0e0d8", "#ffffff" }
+    },
+    {
+        "Strange Red",
+        "#ca6a6a", "#090404",
+        { "#090404", "#ca6a6a", "#aa5050", "#7b3a3a", "#7b3a3a", "#ca6a6a", "#aa5050", "#ca6a6a" },
+        { "#2a1515", "#e08080", "#c06060", "#904848", "#904848", "#e08080", "#c06060", "#f0a0a0" }
+    },
+    {
+        "Burgundy on Black",
+        "#900020", "#000000",
+        { "#000000", "#900020", "#600018", "#700018", "#500010", "#a00028", "#800020", "#c00030" },
+        { "#300008", "#b00028", "#800020", "#900020", "#700018", "#c00030", "#a00028", "#e00038" }
+    },
+    {
+        "Win95 Teal",
+        "#008080", "#000000",
+        { "#000000", "#aa0000", "#00aa00", "#aa5500", "#0000aa", "#aa00aa", "#00aaaa", "#aaaaaa" },
+        { "#555555", "#5555ff", "#55ff55", "#55ffff", "#ff5555", "#ff55ff", "#ffff55", "#ffffff" }
     }
 };
 
@@ -445,13 +499,165 @@ static int load_fonts(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Load current config                                                 */
+/* ------------------------------------------------------------------ */
+
+static void load_current_config(void)
+{
+    FILE *fp;
+    const char *home;
+    char path[1024];
+    char line[MAX_LINE_LEN];
+    char bg[32] = "", fg[32] = "";
+    char colors[16][32];
+    int color_found[16] = {0};
+    char font[256] = "";
+    int fsize = -1;
+    double op = -1.0;
+    int theme_match = -1;
+    int palette_match = -1;
+    int i, j;
+
+    /* Build config path */
+    home = getenv("HOME");
+    if (home == NULL) {
+        fprintf(stderr, "Error: HOME environment variable not set.\n");
+        return;
+    }
+
+    sprintf(path, "%s/%s", home, CONFIG_PATH);
+
+    fp = fopen(path, "r");
+    if (fp == NULL) {
+        printf("No existing config found at %s\n", path);
+        return;
+    }
+
+    /* Parse config file */
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char *key, *val;
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') {
+            line[len - 1] = '\0';
+        }
+        if (line[0] == '\0' || line[0] == '#') {
+            continue;
+        }
+
+        /* Split on first space */
+        key = line;
+        val = strchr(line, ' ');
+        if (val == NULL) {
+            continue;
+        }
+        *val = '\0';
+        val++;
+
+        if (strcmp(key, "background") == 0) {
+            strncpy(bg, val, sizeof(bg) - 1);
+            bg[sizeof(bg) - 1] = '\0';
+        } else if (strcmp(key, "foreground") == 0) {
+            strncpy(fg, val, sizeof(fg) - 1);
+            fg[sizeof(fg) - 1] = '\0';
+        } else if (strncmp(key, "color", 5) == 0) {
+            int idx = atoi(key + 5);
+            if (idx >= 0 && idx < 16) {
+                strncpy(colors[idx], val, 31);
+                colors[idx][31] = '\0';
+                color_found[idx] = 1;
+            }
+        } else if (strcmp(key, "font_family") == 0) {
+            strncpy(font, val, sizeof(font) - 1);
+            font[sizeof(font) - 1] = '\0';
+        } else if (strcmp(key, "font_size") == 0) {
+            fsize = atoi(val);
+        } else if (strcmp(key, "background_opacity") == 0) {
+            op = atof(val);
+        }
+    }
+
+    fclose(fp);
+
+    /* Match theme by background + foreground */
+    for (i = 0; i < MAX_THEMES; i++) {
+        if (strcmp(themes[i].background, bg) == 0 &&
+            strcmp(themes[i].foreground, fg) == 0) {
+            theme_match = i;
+            break;
+        }
+    }
+
+    /* Match palette by all 16 colors */
+    {
+        int all_found = 1;
+        for (i = 0; i < 16; i++) {
+            if (!color_found[i]) {
+                all_found = 0;
+                break;
+            }
+        }
+        if (all_found) {
+            for (i = 0; i < MAX_PALETTES; i++) {
+                int match = 1;
+                for (j = 0; j < 8; j++) {
+                    if (strcmp(palettes[i].normal[j], colors[j]) != 0 ||
+                        strcmp(palettes[i].bright[j], colors[j + 8]) != 0) {
+                        match = 0;
+                        break;
+                    }
+                }
+                if (match) {
+                    palette_match = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* Apply loaded settings */
+    printf("\n--- Loaded Config ---\n");
+
+    if (theme_match >= 0) {
+        selected_theme = theme_match;
+        printf("  Theme:     %s\n", themes[selected_theme].name);
+    } else {
+        printf("  Theme:     <no match found>\n");
+    }
+
+    if (palette_match >= 0) {
+        selected_palette = palette_match;
+        printf("  ANSI:      %s\n", palettes[selected_palette].name);
+    } else {
+        printf("  ANSI:      <no match found>\n");
+    }
+
+    if (font[0] != '\0') {
+        strncpy(selected_font, font, MAX_FONT_LEN - 1);
+        selected_font[MAX_FONT_LEN - 1] = '\0';
+        printf("  Font:      %s\n", selected_font);
+    } else {
+        printf("  Font:      <not set>\n");
+    }
+
+    if (fsize >= MIN_FONT_SIZE && fsize <= MAX_FONT_SIZE) {
+        font_size = fsize;
+    }
+    printf("  Size:      %d\n", font_size);
+
+    if (op >= 0.0 && op <= 1.0) {
+        opacity = op;
+    }
+    printf("  Opacity:   %.2f\n", opacity);
+}
+
+/* ------------------------------------------------------------------ */
 /* Menu display                                                        */
 /* ------------------------------------------------------------------ */
 
 static void display_menu(void)
 {
     printf("\n");
-    printf("=== Kitty Configuration Generator ===\n");
+    printf("=== kitty-care — Kitty Configuration Generator ===\n");
     printf("\n");
     printf("Current settings:\n");
     if (selected_theme >= 0) {
@@ -477,8 +683,9 @@ static void display_menu(void)
     printf("[3] Select Font\n");
     printf("[4] Set Font Size\n");
     printf("[5] Set Opacity\n");
-    printf("[6] Generate Config\n");
-    printf("[7] Exit\n");
+    printf("[6] Apply Config\n");
+    printf("[7] Load Current Config\n");
+    printf("[8] Exit\n");
     printf("\n");
 }
 
@@ -900,6 +1107,9 @@ int main(int argc, char *argv[])
                 running = 0;
                 break;
             case 7:
+                load_current_config();
+                break;
+            case 8:
                 running = 0;
                 printf("\nSayonara, Goodbye!\n");
                 break;
