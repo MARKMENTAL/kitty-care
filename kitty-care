@@ -1,0 +1,694 @@
+#!/usr/bin/env python3
+"""kitty-care — interactive theme and configuration generator for kitty.
+
+Writes kitty's configuration file without clobbering unrelated settings:
+keys that kitty-care does not manage are preserved, and the previous file is
+saved as kitty.conf.<timestamp>.bak before every write.
+
+Requires Python 3.8+. Font browsing uses fc-list from fontconfig.
+"""
+
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+MIN_FONT_SIZE = 6
+MAX_FONT_SIZE = 72
+DEFAULT_SIZE = 12
+DEFAULT_OPACITY = 1.0
+CONFIG_NAME = "kitty.conf"
+COLOR_KEY = re.compile(r"color(?:[0-9]|1[0-5])$")
+MANAGED_KEYS = frozenset({
+    "font_family",
+    "bold_font",
+    "italic_font",
+    "bold_italic_font",
+    "font_size",
+    "background",
+    "foreground",
+    "background_opacity",
+})
+COLOR_SUPPORTED = sys.stdout.isatty()
+
+
+def _c(spec):
+    """Turn a whitespace-separated list of hex values into #rrggbb strings."""
+    return tuple("#" + value for value in spec.split())
+
+
+THEMES = {
+    'Dark': ('#d0d0d0', '#1c1c1c',
+        _c('1c1c1c c50f1f 23a523 b58900 268bd2 d33682 2aa198 d0d0d0'),
+        _c('666666 ff6666 66ff66 ffff66 6666ff ff66ff 66ffff ffffff')),
+    'Light': ('#1c1c1c', '#d0d0d0',
+        _c('1c1c1c c50f1f 23a523 b58900 268bd2 d33682 2aa198 d0d0d0'),
+        _c('666666 ff6666 66ff66 ffff66 6666ff ff66ff 66ffff ffffff')),
+    'Solarized Dark': ('#839496', '#002b36',
+        _c('073642 dc322f 859900 b58900 268bd2 d33682 2aa198 eee8d5'),
+        _c('002b36 cb4b16 586e75 657b83 839496 6c71c4 93a1a1 fdf6e3')),
+    'Solarized Light': ('#657b83', '#fdf6e3',
+        _c('073642 dc322f 859900 b58900 268bd2 d33682 2aa198 eee8d5'),
+        _c('002b36 cb4b16 586e75 657b83 839496 6c71c4 93a1a1 fdf6e3')),
+    'Dracula': ('#f8f8f2', '#282a36',
+        _c('21222c ff5555 50fa7b f1fa8c bd93f9 ff79c6 8be9fd f8f8f2'),
+        _c('6272a4 ff6e6e 69ff94 ffffa5 d6acff ff92df a4ffff ffffff')),
+    'Gruvbox Dark': ('#ebdbb2', '#282828',
+        _c('282828 cc241d 98971a d79921 458588 b16286 689d6a a89984'),
+        _c('928374 fb4934 b8bb26 fabd2f 83a598 d3869b 8ec07c ebdbb2')),
+    'Gruvbox Light': ('#3c3836', '#fbf1c7',
+        _c('fbf1c7 cc241d 98971a d79921 458588 b16286 689d6a 7c6f64'),
+        _c('928374 9d0006 79740e b57614 076678 8f3f71 427b58 3c3836')),
+    'Nord': ('#d8dee9', '#2e3440',
+        _c('3b4252 bf616a a3be8c ebcb8b 81a1c1 b48ead 88c0d0 e5e9f0'),
+        _c('4c566a bf616a a3be8c ebcb8b 81a1c1 b48ead 8fbcbb eceff4')),
+    'Monokai': ('#f8f8f2', '#272822',
+        _c('272822 f92672 a6e22e f4bf75 66d9ef ae81ff a1efe4 f8f8f2'),
+        _c('75715e f92672 a6e22e e6db74 66d9ef ae81ff a1efe4 f9f8f5')),
+    'Tokyo Night': ('#c0caf5', '#1a1b26',
+        _c('15161e f7768e 9ece6a e0af68 7aa2f7 bb9af7 7dcfff a9b1d6'),
+        _c('414868 f7768e 9ece6a e0af68 7aa2f7 bb9af7 7dcfff c0caf5')),
+    'One Dark': ('#abb2bf', '#282c34',
+        _c('282c34 e06c75 98c379 e5c07b 61afef c678dd 56b6c2 abb2bf'),
+        _c('5c6370 e06c75 98c379 e5c07b 61afef c678dd 56b6c2 ffffff')),
+    'Cyberpunk 2077': ('#f9f227', '#0d0d0d',
+        _c('0d0d0d ff0055 00ff41 f9f227 00b8ff ff00cc 00ffff f9f227'),
+        _c('333333 ff3377 33ff66 ffff33 33ccff ff33ff 33ffff ffff66')),
+    'Cyan on Black': ('#00ffff', '#000000',
+        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
+        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
+    'Red on Black': ('#ff0000', '#000000',
+        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
+        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
+    'Lime Green on Black': ('#00ff00', '#000000',
+        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
+        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
+    'Chartreuse on Black': ('#7fff00', '#000000',
+        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
+        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
+    'Amber on Black': ('#ffbf00', '#000000',
+        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
+        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
+    'Blueberry on Black': ('#8ec5fc', '#000000',
+        _c('000000 0d47a1 1565c0 1976d2 1e88e5 42a5f5 64b5f6 90caf9'),
+        _c('37474f 1e88e5 42a5f5 64b5f6 90caf9 bbdefb e3f2fd ffffff')),
+    'Spring Blossom': ('#ffb7c5', '#2d5016',
+        _c('2d5016 c2185b 7cb342 fbc02d 00897b d81b60 aed581 f8bbd0'),
+        _c('558b2f e91e63 8bc34a ffeb3b 009688 ec407a c5e1a5 fce4ec')),
+    'Summer Sunset': ('#ff9a5a', '#1a1a2e',
+        _c('1a1a2e e64a19 ff7043 ffab40 d81b60 8e24aa 5c6bc0 ffb74d'),
+        _c('424242 ff5722 ff8a65 ffc107 e91e63 9c27b0 3f51b5 ffe0b2')),
+    'Autumn Forest': ('#d4a373', '#3e2723',
+        _c('3e2723 bf360c e65100 8d6e63 5d4037 33691e 9e9d24 a1887f'),
+        _c('6d4c41 e64a19 f57c00 a1887f 795548 558b2f c0ca33 d7ccc8')),
+    'Winter Frost': ('#e0f7fa', '#1a237e',
+        _c('1a237e 006064 00838f 0097a7 00acc1 26c6da 4dd0e1 80deea'),
+        _c('283593 00897b 00acc1 26c6da 4dd0e1 80deea b2ebf2 ffffff')),
+    'Stormy Night': ('#b0bec5', '#263238',
+        _c('263238 37474f 455a64 546e7a 607d8b 78909c 90a4ae b0bec5'),
+        _c('455a64 607d8b 78909c 90a4ae b0bec5 cfd8dc eceff1 ffffff')),
+    'Sunny Day': ('#fff59d', '#33691e',
+        _c('33691e f57f17 c0ca33 00acc1 00897b 5c6bc0 7cb342 fff59d'),
+        _c('558b2f fbc02d afb42b 26c6da 0097a7 3f51b5 9ccc65 fff9c4')),
+    'Foggy Morning': ('#cfd8dc', '#455a64',
+        _c('455a64 546e7a 607d8b 78909c 90a4ae b0bec5 cfd8dc eceff1'),
+        _c('607d8b 78909c 90a4ae b0bec5 cfd8dc eceff1 f5f5f5 ffffff')),
+    'Lavender Purple on Black': ('#c8a2c8', '#000000',
+        _c('000000 8b008b 9370db ba55d3 9932cc 8a2be2 da70d6 dda0dd'),
+        _c('4b0082 9400d3 a020f0 b030b0 c040c0 d050d0 e060e0 f070f0')),
+    '#d70a53 on Black': ('#d70a53', '#000000',
+        _c('000000 8b0045 a01050 b52060 ca3070 df4080 e85090 f060a0'),
+        _c('550022 6a0033 7f0044 940055 a90066 be0077 d30088 e80099')),
+    'Gold on Black': ('#ffd700', '#000000',
+        _c('000000 8b6914 a07d1a b59120 caa526 dfb92c f0cd32 ffe138'),
+        _c('554400 6a5500 7f6600 947700 a98800 be9900 d3aa00 e8bb00')),
+    'Rose Gold on Black': ('#e0bfb8', '#000000',
+        _c('000000 8b4557 a05060 b55b69 ca6672 df717b e87c84 f0878d'),
+        _c('552233 6a2d3e 7f3849 944354 a94e5f be596a d36475 e86f80')),
+    'IBM VGA': ('#aaaaaa', '#000000',
+        _c('000000 0000aa 00aa00 00aaaa aa0000 aa00aa aa5500 aaaaaa'),
+        _c('555555 5555ff 55ff55 55ffff ff5555 ff55ff ffff55 ffffff')),
+    'Miku NT': ('#338296', '#1a1a1a',
+        _c('1a1a1a e43d82 89cdc6 338296 338296 e43d82 89cdc6 fef5f7'),
+        _c('3a3a3a f060a0 a0e0d8 4a9aad 4a9aad f060a0 a0e0d8 ffffff')),
+    'Strange Red': ('#ca6a6a', '#090404',
+        _c('090404 ca6a6a aa5050 7b3a3a 7b3a3a ca6a6a aa5050 ca6a6a'),
+        _c('2a1515 e08080 c06060 904848 904848 e08080 c06060 f0a0a0')),
+    'Burgundy on Black': ('#900020', '#000000',
+        _c('000000 900020 600018 700018 500010 a00028 800020 c00030'),
+        _c('300008 b00028 800020 900020 700018 c00030 a00028 e00038')),
+    'Win95 Teal': ('#008080', '#000000',
+        _c('000000 aa0000 00aa00 aa5500 0000aa aa00aa 00aaaa aaaaaa'),
+        _c('555555 5555ff 55ff55 55ffff ff5555 ff55ff ffff55 ffffff')),
+}
+
+PALETTES = {
+    'Nord': (
+        _c('3b4252 bf616a a3be8c ebcb8b 81a1c1 b48ead 88c0d0 e5e9f0'),
+        _c('4c566a bf616a a3be8c ebcb8b 81a1c1 b48ead 8fbcbb eceff4')),
+    'Gruvbox Dark': (
+        _c('282828 cc241d 98971a d79921 458588 b16286 689d6a a89984'),
+        _c('928374 fb4934 b8bb26 fabd2f 83a598 d3869b 8ec07c ebdbb2')),
+    'Gruvbox Light': (
+        _c('fbf1c7 cc241d 98971a d79921 458588 b16286 689d6a 7c6f64'),
+        _c('928374 9d0006 79740e b57614 076678 8f3f71 427b58 3c3836')),
+    'Catppuccin Latte': (
+        _c('5c5f77 d20f39 40a02b df8e1d 1e66f5 ea76cb 179299 acb0be'),
+        _c('6c6f85 d20f39 40a02b df8e1d 1e66f5 ea76cb 179299 bcc0cc')),
+    'Catppuccin Frappé': (
+        _c('626880 e78284 a6d189 e5c890 8caaee f4b8e4 81c8be a5adce'),
+        _c('737994 e78284 a6d189 e5c890 8caaee f4b8e4 81c8be b5bfe2')),
+    'Catppuccin Macchiato': (
+        _c('5b6078 ed8796 a6da95 eed49f 8aadf4 f5bde6 8bd5ca a5adcb'),
+        _c('6e738d ed8796 a6da95 eed49f 8aadf4 f5bde6 8bd5ca b8c0e0')),
+    'Catppuccin Mocha': (
+        _c('585b70 eba0ac a6e3a1 f9e2af 89b4fa f5c2e7 94e2d5 a6adc8'),
+        _c('7f849c eba0ac a6e3a1 f9e2af 89b4fa f5c2e7 94e2d5 bac2de')),
+    'Dracula': (
+        _c('21222c ff5555 50fa7b f1fa8c bd93f9 ff79c6 8be9fd f8f8f2'),
+        _c('6272a4 ff6e6e 69ff94 ffffa5 d6acff ff92df a4ffff ffffff')),
+    'Tokyo Night': (
+        _c('15161e f7768e 9ece6a e0af68 7aa2f7 bb9af7 7dcfff a9b1d6'),
+        _c('414868 f7768e 9ece6a e0af68 7aa2f7 bb9af7 7dcfff c0caf5')),
+    "Syntwave '84": (
+        _c('261f33 ff3838 3eff7a ffe43e 3e8bff ff3ed4 3effe0 f8f8f2'),
+        _c('4a3f5c ff5c5c 5cff9c ffff5c 5c9cff ff5cf0 5cffff ffffff')),
+    'Tango': (
+        _c('2e3436 cc0000 4e9a06 c4a000 3465a4 75507b 06989a d3d7cf'),
+        _c('555753 ef2929 8ae234 fce94f 729fcf ad7fa8 34e2e2 eeeeec')),
+    'Solarized Dark': (
+        _c('073642 dc322f 859900 b58900 268bd2 d33682 2aa198 eee8d5'),
+        _c('002b36 cb4b16 586e75 657b83 839496 6c71c4 93a1a1 fdf6e3')),
+    'Solarized Light': (
+        _c('073642 dc322f 859900 b58900 268bd2 d33682 2aa198 eee8d5'),
+        _c('002b36 cb4b16 586e75 657b83 839496 6c71c4 93a1a1 fdf6e3')),
+    'Monokai': (
+        _c('272822 f92672 a6e22e f4bf75 66d9ef ae81ff a1efe4 f8f8f2'),
+        _c('75715e f92672 a6e22e e6db74 66d9ef ae81ff a1efe4 f9f8f5')),
+}
+
+
+def _validate_tables():
+    for name, (fg, bg, normal, bright) in THEMES.items():
+        colors = (fg, bg) + normal + bright
+        if len(normal) != 8 or len(bright) != 8 or any(
+                not re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in colors):
+            raise ValueError("invalid color table for theme %r" % name)
+    for name, (normal, bright) in PALETTES.items():
+        if len(normal) != 8 or len(bright) != 8 or any(
+                not re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in normal + bright):
+            raise ValueError("invalid color table for palette %r" % name)
+
+
+_validate_tables()
+
+THEME_NAMES = list(THEMES)
+PALETTE_NAMES = list(PALETTES)
+
+_fonts = None
+
+
+class Settings:
+    def __init__(self):
+        self.theme = -1
+        self.palette = -1
+        self.font = ""
+        self.size = DEFAULT_SIZE
+        self.opacity = DEFAULT_OPACITY
+
+
+# ---------------------------------------------------------------------------
+# Paths and config parsing
+# ---------------------------------------------------------------------------
+
+def config_path():
+    directory = os.environ.get("KITTY_CONFIG_DIRECTORY")
+    if not directory:
+        base = os.environ.get("XDG_CONFIG_HOME")
+        if not base:
+            base = os.path.join(os.path.expanduser("~"), ".config")
+        directory = os.path.join(base, "kitty")
+    return os.path.join(os.path.expanduser(directory), CONFIG_NAME)
+
+
+def read_config(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return None
+
+
+def parse_values(text):
+    values = {}
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split(None, 1)
+        if len(parts) == 2:
+            values[parts[0]] = parts[1].strip()
+    return values
+
+
+def load_settings(path):
+    settings = Settings()
+    text = read_config(path)
+    if text is None:
+        print("No existing config at %s; starting from defaults." % path)
+        return settings
+
+    values = parse_values(text)
+    background = values.get("background", "").lower()
+    foreground = values.get("foreground", "").lower()
+    colors = tuple(values.get("color%d" % index, "").lower() for index in range(16))
+
+    for index, (_, (theme_fg, theme_bg, _, _)) in enumerate(THEMES.items()):
+        if theme_fg.lower() == foreground and theme_bg.lower() == background:
+            settings.theme = index
+            break
+
+    if all(colors):
+        for index, (normal, bright) in enumerate(PALETTES.values()):
+            if colors == tuple(color.lower() for color in normal + bright):
+                settings.palette = index
+                break
+
+    settings.font = values.get("font_family", "")
+
+    try:
+        size = int(values.get("font_size", "").split(".")[0])
+    except ValueError:
+        size = DEFAULT_SIZE
+    if MIN_FONT_SIZE <= size <= MAX_FONT_SIZE:
+        settings.size = size
+
+    try:
+        opacity = float(values.get("background_opacity", ""))
+    except ValueError:
+        opacity = DEFAULT_OPACITY
+    if 0.0 <= opacity <= 1.0:
+        settings.opacity = opacity
+
+    print("\n--- Loaded Config ---")
+    print("  Theme:     %s" % (
+        THEME_NAMES[settings.theme] if settings.theme >= 0 else "<no match found>"))
+    print("  ANSI:      %s" % (
+        PALETTE_NAMES[settings.palette] if settings.palette >= 0 else "<no match found>"))
+    print("  Font:      %s" % (settings.font or "<not set>"))
+    print("  Size:      %d" % settings.size)
+    print("  Opacity:   %.2f" % settings.opacity)
+    return settings
+
+
+# ---------------------------------------------------------------------------
+# Input helpers
+# ---------------------------------------------------------------------------
+
+def ask(label):
+    try:
+        return input(label)
+    except EOFError:
+        print()
+        raise SystemExit(0)
+
+
+def ask_int(label, low, high):
+    while True:
+        raw = ask(label).strip()
+        if not raw:
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            print("Enter a whole number between %d and %d, or press Enter to cancel." % (low, high))
+            continue
+        if low <= value <= high:
+            return value
+        print("Please enter a number between %d and %d." % (low, high))
+
+
+def ask_float(label, low, high):
+    while True:
+        raw = ask(label).strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            print("Enter a number between %.1f and %.1f, or press Enter to cancel." % (low, high))
+            continue
+        if low <= value <= high:
+            return value
+        print("Please enter a number between %.1f and %.1f." % (low, high))
+
+
+# ---------------------------------------------------------------------------
+# Menu
+# ---------------------------------------------------------------------------
+
+def swatches(colors):
+    if not COLOR_SUPPORTED:
+        return ""
+    blocks = []
+    for color in colors:
+        red, green, blue = (int(color[start:start + 2], 16) for start in (1, 3, 5))
+        blocks.append("\x1b[48;2;%d;%d;%dm " % (red, green, blue))
+    return " " + "".join(blocks) + "\x1b[0m"
+
+
+def show_menu(settings):
+    print()
+    print("=== kitty-care — Kitty Configuration Generator ===")
+    print()
+    print("Target: %s" % config_path())
+    print("Current settings:")
+    print("  Theme:     %s" % (
+        THEME_NAMES[settings.theme] if settings.theme >= 0 else "<not set>"))
+    print("  ANSI:      %s" % (
+        PALETTE_NAMES[settings.palette] if settings.palette >= 0 else "<not set>"))
+    print("  Font:      %s" % (settings.font or "<not set>"))
+    print("  Size:      %d" % settings.size)
+    print("  Opacity:   %.2f" % settings.opacity)
+    print()
+    print("[1] Select Theme")
+    print("[2] Select ANSI Palette")
+    print("[3] Select Font")
+    print("[4] Set Font Size")
+    print("[5] Set Opacity")
+    print("[6] Apply Config")
+    print("[7] Load Current Config")
+    print("[8] Exit")
+    print()
+
+
+def select_theme(settings):
+    print("\n--- Select Theme ---")
+    for index, (name, (fg, bg, normal, _)) in enumerate(THEMES.items(), 1):
+        print("[%2d] %-24s%s" % (index, name, swatches((bg, fg) + normal)))
+    choice = ask_int("\nChoice (Enter to cancel): ", 1, len(THEMES))
+    if choice is None:
+        print("Cancelled.")
+        return
+    settings.theme = choice - 1
+    print("Theme set to: %s" % THEME_NAMES[settings.theme])
+
+
+def select_palette(settings):
+    print("\n--- Select ANSI Palette ---")
+    for index, (name, (normal, bright)) in enumerate(PALETTES.items(), 1):
+        print("[%2d] %-24s%s" % (index, name, swatches(normal + bright)))
+    print("[%2d] %s" % (len(PALETTES) + 1, "Reset to Theme Default"))
+    choice = ask_int("\nChoice (Enter to cancel): ", 1, len(PALETTES) + 1)
+    if choice is None:
+        print("Cancelled.")
+        return
+    if choice == len(PALETTES) + 1:
+        settings.palette = -1
+        print("ANSI palette reset to theme default.")
+        return
+    settings.palette = choice - 1
+    print("ANSI palette set to: %s" % PALETTE_NAMES[settings.palette])
+
+
+# ---------------------------------------------------------------------------
+# Fonts
+# ---------------------------------------------------------------------------
+
+def unique_families(text):
+    seen = set()
+    families = []
+    for line in text.splitlines():
+        family = line.split(",", 1)[0].strip()
+        if family and family.casefold() not in seen:
+            seen.add(family.casefold())
+            families.append(family)
+    return sorted(families, key=str.casefold)
+
+
+def available_fonts():
+    global _fonts
+    if _fonts is not None:
+        return _fonts
+    if shutil.which("fc-list") is None:
+        print("\nfc-list was not found; install fontconfig to browse installed fonts.")
+        _fonts = []
+        return _fonts
+    for command in (["fc-list", ":spacing=mono", "family"], ["fc-list", "family"]):
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode == 0:
+            _fonts = unique_families(result.stdout)
+            if _fonts:
+                return _fonts
+    _fonts = []
+    return _fonts
+
+
+def select_font(settings):
+    fonts = available_fonts()
+    if not fonts:
+        manual = ask("\nEnter a font family name (q to cancel): ").strip()
+        if not manual or manual.casefold() == "q":
+            print("Cancelled.")
+            return
+        settings.font = manual
+        print("Font set to: %s" % settings.font)
+        return
+
+    search = ask("\nSearch font (Enter for all, q to cancel): ").strip()
+    if search.casefold() == "q":
+        print("Cancelled.")
+        return
+    matches = [font for font in fonts if search.casefold() in font.casefold()]
+    if not matches:
+        print("No fonts match %r." % search)
+        return
+
+    print("\nFound %d matching fonts:" % len(matches))
+    for index, name in enumerate(matches, 1):
+        print("[%d] %s" % (index, name))
+    choice = ask_int("\nChoice (Enter to cancel): ", 1, len(matches))
+    if choice is None:
+        print("Cancelled.")
+        return
+    settings.font = matches[choice - 1]
+    print("Font set to: %s" % settings.font)
+
+
+def set_font_size(settings):
+    print("\n--- Set Font Size ---")
+    size = ask_int("Font size (%d-%d, Enter to cancel): " % (MIN_FONT_SIZE, MAX_FONT_SIZE),
+                   MIN_FONT_SIZE, MAX_FONT_SIZE)
+    if size is None:
+        print("Cancelled.")
+        return
+    settings.size = size
+    print("Font size set to: %d" % size)
+
+
+def set_opacity(settings):
+    print("\n--- Set Opacity ---")
+    opacity = ask_float("Opacity (0.0-1.0, Enter to cancel): ", 0.0, 1.0)
+    if opacity is None:
+        print("Cancelled.")
+        return
+    settings.opacity = opacity
+    print("Opacity set to: %.2f" % opacity)
+
+
+# ---------------------------------------------------------------------------
+# Config generation
+# ---------------------------------------------------------------------------
+
+def render(existing, settings):
+    fg, bg, normal, bright = THEMES[THEME_NAMES[settings.theme]]
+    if settings.palette >= 0:
+        normal, bright = PALETTES[PALETTE_NAMES[settings.palette]]
+
+    kept = []
+    for raw in (existing or "").splitlines():
+        stripped = raw.strip()
+        if stripped in ("# Generated by kitty-care", "# Generated by kitty-conf"):
+            continue
+        if stripped and not stripped.startswith("#"):
+            key = stripped.split(None, 1)[0]
+            if key in MANAGED_KEYS or COLOR_KEY.match(key):
+                continue
+        kept.append(raw)
+
+    while kept and not kept[-1].strip():
+        kept.pop()
+
+    block = [
+        "# Generated by kitty-care",
+        "font_family %s" % settings.font,
+        "font_size %d" % settings.size,
+        "",
+        "background %s" % bg,
+        "foreground %s" % fg,
+    ]
+    block.extend("color%d %s" % (index, color) for index, color in enumerate(normal))
+    block.extend("color%d %s" % (index + 8, color) for index, color in enumerate(bright))
+    block.extend(["", "background_opacity %.2f" % settings.opacity])
+
+    lines = kept + ([""] if kept else []) + block
+    return "\n".join(lines) + "\n"
+
+
+def backup_path(path):
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    candidate = "%s.%s.bak" % (path, timestamp)
+    counter = 1
+    while os.path.exists(candidate):
+        candidate = "%s.%s-%d.bak" % (path, timestamp, counter)
+        counter += 1
+    return candidate
+
+
+def write_config(settings):
+    if settings.theme < 0:
+        print("\nError: no theme selected. Choose one with menu option 1.")
+        return False
+    if not settings.font:
+        print("\nError: no font selected. Choose one with menu option 3.")
+        return False
+
+    path = config_path()
+    target = os.path.realpath(path)
+    existing = read_config(target)
+    text = render(existing, settings)
+    directory = os.path.dirname(target) or "."
+    os.makedirs(directory, exist_ok=True)
+
+    backup = None
+    if existing is not None:
+        backup = backup_path(target)
+        shutil.copy2(target, backup)
+
+    handle, temporary = tempfile.mkstemp(prefix=".%s." % CONFIG_NAME, dir=directory)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        mode = stat.S_IMODE(os.stat(target).st_mode) if existing is not None else 0o644
+        os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+    print("\nConfig written to: %s" % target)
+    if target != path:
+        print("Symlink preserved: %s" % path)
+    if backup:
+        print("Previous config saved as: %s" % backup)
+    print("\nRestart kitty or reload the config with ctrl+shift+f5.")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def print_help():
+    print("Usage: kitty-care")
+    print()
+    print("Interactive generator for kitty's configuration file:")
+    print("  $KITTY_CONFIG_DIRECTORY/kitty.conf")
+    print("  ${XDG_CONFIG_HOME:-~/.config}/kitty/kitty.conf")
+    print()
+    print("Options:")
+    print("  -h, --help    Show this help message")
+    print()
+    print("The menu lets you:")
+    print("  - Select from %d color themes" % len(THEMES))
+    print("  - Select from %d ANSI color palettes, or the theme's own colors" % len(PALETTES))
+    print("  - Search installed monospace fonts (via fc-list)")
+    print("  - Set the font size (%d-%d)" % (MIN_FONT_SIZE, MAX_FONT_SIZE))
+    print("  - Set the background opacity (0.0-1.0)")
+    print("  - Write the config")
+    print()
+    print("Existing settings that kitty-care does not manage are preserved,")
+    print("and the previous file is saved as kitty.conf.<timestamp>.bak.")
+
+
+def main(argv):
+    if len(argv) > 1 and argv[1] in ("-h", "--help"):
+        print_help()
+        return 0
+    if len(argv) > 1:
+        print("kitty-care: unknown argument %r" % argv[1], file=sys.stderr)
+        print("Usage: kitty-care [--help]", file=sys.stderr)
+        return 2
+
+    print("kitty-care — Kitty Configuration Generator")
+    print("==========================================")
+    path = config_path()
+    settings = load_settings(path)
+
+    while True:
+        show_menu(settings)
+        raw = ask("Choice (1-8, Enter to exit): ").strip()
+        if not raw:
+            print("\nSayonara, goodbye!")
+            return 0
+        try:
+            choice = int(raw)
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+            continue
+        if not 1 <= choice <= 8:
+            print("Invalid choice. Please select 1-8.")
+            continue
+
+        if choice == 1:
+            select_theme(settings)
+        elif choice == 2:
+            select_palette(settings)
+        elif choice == 3:
+            select_font(settings)
+        elif choice == 4:
+            set_font_size(settings)
+        elif choice == 5:
+            set_opacity(settings)
+        elif choice == 6:
+            if write_config(settings):
+                return 0
+        elif choice == 7:
+            settings = load_settings(path)
+        else:
+            print("\nSayonara, goodbye!")
+            return 0
+
+
+def cli():
+    try:
+        result = main(sys.argv)
+        sys.stdout.flush()
+        return result
+    except BrokenPipeError:
+        # The reader went away (e.g. `kitty-care --help | head`); stop quietly.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except OSError:
+            pass
+        return 0
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        return 130
+    except OSError as error:
+        print("kitty-care: %s" % error, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

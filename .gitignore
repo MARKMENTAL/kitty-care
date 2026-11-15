@@ -1,2 +1,2 @@
-# Don't commit binary
-kitty-conf
+__pycache__/
+*.pyc

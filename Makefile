@@ -1,30 +1,27 @@
-# Compiler and flags
-CC      := gcc
-CFLAGS  := -std=c89 -Wall -Wextra
+# kitty-care — interactive kitty configuration generator
 
-SRC     := kitty-conf.c
-BIN     := kitty-conf
+PYTHON ?= python3
+PREFIX ?= $(HOME)/.local
+BIN    := kitty-care
+DEST   := $(DESTDIR)$(PREFIX)/bin
 
-# Default target — builds the binary
-all: $(BIN)
+all: check
 
-# Compile the source into the binary
-$(BIN): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(BIN)
+# Byte-compile the script and the tests without leaving a binary behind
+check:
+	$(PYTHON) -m py_compile $(BIN) tests/test_kitty_care.py
 
-# Force a full rebuild
-rebuild: clean all
+test:
+	$(PYTHON) -m unittest discover -s tests -v
 
-# Build and run
-run: $(BIN)
-	./$(BIN)
+install:
+	mkdir -p $(DEST)
+	install -m755 $(BIN) $(DEST)/$(BIN)
 
-# Syntax-check only, no binary output
-check: $(SRC)
-	$(CC) $(CFLAGS) -fsyntax-only $(SRC)
+uninstall:
+	rm -f $(DEST)/$(BIN)
 
-# Remove build artifacts
 clean:
-	rm -f $(BIN)
+	rm -rf __pycache__ tests/__pycache__
 
-.PHONY: all rebuild run check clean
+.PHONY: all check test install uninstall clean
