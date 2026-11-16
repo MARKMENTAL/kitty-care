@@ -42,7 +42,7 @@ The config is written to the first of:
 
 ## What gets written
 
-- 34 color themes and 14 ANSI palettes, selectable independently
+- 38 color themes and 14 ANSI palettes, selectable independently
 - `font_family` (kitty resolves the bold and italic faces itself)
 - `font_size`, `background`, `foreground`, `color0`–`color15`,
   `background_opacity`

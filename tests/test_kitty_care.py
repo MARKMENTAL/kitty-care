@@ -63,8 +63,13 @@ class EnvironmentTest(unittest.TestCase):
 
 class TableTests(unittest.TestCase):
     def test_counts(self):
-        self.assertEqual(len(kc.THEMES), 34)
+        self.assertEqual(len(kc.THEMES), 38)
         self.assertEqual(len(kc.PALETTES), 14)
+
+    def test_theme_fg_bg_pairs_are_unique(self):
+        pairs = [(fg.lower(), bg.lower())
+                 for fg, bg, _, _ in kc.THEMES.values()]
+        self.assertEqual(len(pairs), len(set(pairs)))
 
     def test_color_shapes(self):
         for name, (fg, bg, normal, bright) in kc.THEMES.items():
@@ -294,7 +299,7 @@ class CliTests(EnvironmentTest):
         result = self.run_cli("--help")
         self.assertEqual(result.returncode, 0)
         self.assertIn("Usage: kitty-care", result.stdout)
-        self.assertIn("34 color themes", result.stdout)
+        self.assertIn("38 color themes", result.stdout)
         self.assertIn("14 ANSI color palettes", result.stdout)
 
     def test_unknown_argument(self):
