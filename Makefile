@@ -4,6 +4,8 @@ PYTHON ?= python3
 PREFIX ?= $(HOME)/.local
 BIN    := kitty-care
 DEST   := $(DESTDIR)$(PREFIX)/bin
+SHARE  := $(DESTDIR)$(PREFIX)/share/kitty-care
+THEMES := themes.toml ansi_palettes.toml
 
 all: check
 
@@ -15,11 +17,13 @@ test:
 	$(PYTHON) -m unittest discover -s tests -v
 
 install:
-	mkdir -p $(DEST)
+	mkdir -p $(DEST) $(SHARE)
 	install -m755 $(BIN) $(DEST)/$(BIN)
+	install -m644 $(THEMES) $(SHARE)
 
 uninstall:
 	rm -f $(DEST)/$(BIN)
+	rm -f $(addprefix $(SHARE)/,$(THEMES))
 
 clean:
 	rm -rf __pycache__ tests/__pycache__

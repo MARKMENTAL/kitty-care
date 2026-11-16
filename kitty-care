@@ -5,7 +5,10 @@ Writes kitty's configuration file without clobbering unrelated settings:
 keys that kitty-care does not manage are preserved, and the previous file is
 saved as kitty.conf.<timestamp>.bak before every write.
 
-Requires Python 3.8+. Font browsing uses fc-list from fontconfig.
+Requires Python 3.11+ (for tomllib). Font browsing uses fc-list from fontconfig.
+
+The color themes and ANSI palettes live in themes.toml and
+ansi_palettes.toml next to this script (or in a kitty-care data directory).
 """
 
 import os
@@ -16,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 MIN_FONT_SIZE = 6
 MAX_FONT_SIZE = 72
@@ -36,187 +40,134 @@ MANAGED_KEYS = frozenset({
 COLOR_SUPPORTED = sys.stdout.isatty()
 
 
-def _c(spec):
-    """Turn a whitespace-separated list of hex values into #rrggbb strings."""
-    return tuple("#" + value for value in spec.split())
+THEMES_FILE = "themes.toml"
+PALETTES_FILE = "ansi_palettes.toml"
+THEMES_ENV = "KITTY_CARE_THEMES"
+PALETTES_ENV = "KITTY_CARE_PALETTES"
+HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 
 
-THEMES = {
-    'Dark': ('#d0d0d0', '#1c1c1c',
-        _c('1c1c1c c50f1f 23a523 b58900 268bd2 d33682 2aa198 d0d0d0'),
-        _c('666666 ff6666 66ff66 ffff66 6666ff ff66ff 66ffff ffffff')),
-    'Light': ('#1c1c1c', '#d0d0d0',
-        _c('1c1c1c c50f1f 23a523 b58900 268bd2 d33682 2aa198 d0d0d0'),
-        _c('666666 ff6666 66ff66 ffff66 6666ff ff66ff 66ffff ffffff')),
-    'Solarized Dark': ('#839496', '#002b36',
-        _c('073642 dc322f 859900 b58900 268bd2 d33682 2aa198 eee8d5'),
-        _c('002b36 cb4b16 586e75 657b83 839496 6c71c4 93a1a1 fdf6e3')),
-    'Solarized Light': ('#657b83', '#fdf6e3',
-        _c('073642 dc322f 859900 b58900 268bd2 d33682 2aa198 eee8d5'),
-        _c('002b36 cb4b16 586e75 657b83 839496 6c71c4 93a1a1 fdf6e3')),
-    'Dracula': ('#f8f8f2', '#282a36',
-        _c('21222c ff5555 50fa7b f1fa8c bd93f9 ff79c6 8be9fd f8f8f2'),
-        _c('6272a4 ff6e6e 69ff94 ffffa5 d6acff ff92df a4ffff ffffff')),
-    'Gruvbox Dark': ('#ebdbb2', '#282828',
-        _c('282828 cc241d 98971a d79921 458588 b16286 689d6a a89984'),
-        _c('928374 fb4934 b8bb26 fabd2f 83a598 d3869b 8ec07c ebdbb2')),
-    'Gruvbox Light': ('#3c3836', '#fbf1c7',
-        _c('fbf1c7 cc241d 98971a d79921 458588 b16286 689d6a 7c6f64'),
-        _c('928374 9d0006 79740e b57614 076678 8f3f71 427b58 3c3836')),
-    'Nord': ('#d8dee9', '#2e3440',
-        _c('3b4252 bf616a a3be8c ebcb8b 81a1c1 b48ead 88c0d0 e5e9f0'),
-        _c('4c566a bf616a a3be8c ebcb8b 81a1c1 b48ead 8fbcbb eceff4')),
-    'Monokai': ('#f8f8f2', '#272822',
-        _c('272822 f92672 a6e22e f4bf75 66d9ef ae81ff a1efe4 f8f8f2'),
-        _c('75715e f92672 a6e22e e6db74 66d9ef ae81ff a1efe4 f9f8f5')),
-    'Tokyo Night': ('#c0caf5', '#1a1b26',
-        _c('15161e f7768e 9ece6a e0af68 7aa2f7 bb9af7 7dcfff a9b1d6'),
-        _c('414868 f7768e 9ece6a e0af68 7aa2f7 bb9af7 7dcfff c0caf5')),
-    'One Dark': ('#abb2bf', '#282c34',
-        _c('282c34 e06c75 98c379 e5c07b 61afef c678dd 56b6c2 abb2bf'),
-        _c('5c6370 e06c75 98c379 e5c07b 61afef c678dd 56b6c2 ffffff')),
-    'Cyberpunk 2077': ('#f9f227', '#0d0d0d',
-        _c('0d0d0d ff0055 00ff41 f9f227 00b8ff ff00cc 00ffff f9f227'),
-        _c('333333 ff3377 33ff66 ffff33 33ccff ff33ff 33ffff ffff66')),
-    'Cyan on Black': ('#00ffff', '#000000',
-        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
-        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
-    'Red on Black': ('#ff0000', '#000000',
-        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
-        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
-    'Lime Green on Black': ('#00ff00', '#000000',
-        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
-        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
-    'Chartreuse on Black': ('#7fff00', '#000000',
-        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
-        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
-    'Amber on Black': ('#ffbf00', '#000000',
-        _c('000000 cc0000 00cc00 cccc00 0000cc cc00cc 00cccc cccccc'),
-        _c('666666 ff0000 00ff00 ffff00 0000ff ff00ff 00ffff ffffff')),
-    'Blueberry on Black': ('#8ec5fc', '#000000',
-        _c('000000 0d47a1 1565c0 1976d2 1e88e5 42a5f5 64b5f6 90caf9'),
-        _c('37474f 1e88e5 42a5f5 64b5f6 90caf9 bbdefb e3f2fd ffffff')),
-    'Spring Blossom': ('#ffb7c5', '#2d5016',
-        _c('2d5016 c2185b 7cb342 fbc02d 00897b d81b60 aed581 f8bbd0'),
-        _c('558b2f e91e63 8bc34a ffeb3b 009688 ec407a c5e1a5 fce4ec')),
-    'Summer Sunset': ('#ff9a5a', '#1a1a2e',
-        _c('1a1a2e e64a19 ff7043 ffab40 d81b60 8e24aa 5c6bc0 ffb74d'),
-        _c('424242 ff5722 ff8a65 ffc107 e91e63 9c27b0 3f51b5 ffe0b2')),
-    'Autumn Forest': ('#d4a373', '#3e2723',
-        _c('3e2723 bf360c e65100 8d6e63 5d4037 33691e 9e9d24 a1887f'),
-        _c('6d4c41 e64a19 f57c00 a1887f 795548 558b2f c0ca33 d7ccc8')),
-    'Winter Frost': ('#e0f7fa', '#1a237e',
-        _c('1a237e 006064 00838f 0097a7 00acc1 26c6da 4dd0e1 80deea'),
-        _c('283593 00897b 00acc1 26c6da 4dd0e1 80deea b2ebf2 ffffff')),
-    'Stormy Night': ('#b0bec5', '#263238',
-        _c('263238 37474f 455a64 546e7a 607d8b 78909c 90a4ae b0bec5'),
-        _c('455a64 607d8b 78909c 90a4ae b0bec5 cfd8dc eceff1 ffffff')),
-    'Sunny Day': ('#fff59d', '#33691e',
-        _c('33691e f57f17 c0ca33 00acc1 00897b 5c6bc0 7cb342 fff59d'),
-        _c('558b2f fbc02d afb42b 26c6da 0097a7 3f51b5 9ccc65 fff9c4')),
-    'Foggy Morning': ('#cfd8dc', '#455a64',
-        _c('455a64 546e7a 607d8b 78909c 90a4ae b0bec5 cfd8dc eceff1'),
-        _c('607d8b 78909c 90a4ae b0bec5 cfd8dc eceff1 f5f5f5 ffffff')),
-    'Lavender Purple on Black': ('#c8a2c8', '#000000',
-        _c('000000 8b008b 9370db ba55d3 9932cc 8a2be2 da70d6 dda0dd'),
-        _c('4b0082 9400d3 a020f0 b030b0 c040c0 d050d0 e060e0 f070f0')),
-    '#d70a53 on Black': ('#d70a53', '#000000',
-        _c('000000 8b0045 a01050 b52060 ca3070 df4080 e85090 f060a0'),
-        _c('550022 6a0033 7f0044 940055 a90066 be0077 d30088 e80099')),
-    'Gold on Black': ('#ffd700', '#000000',
-        _c('000000 8b6914 a07d1a b59120 caa526 dfb92c f0cd32 ffe138'),
-        _c('554400 6a5500 7f6600 947700 a98800 be9900 d3aa00 e8bb00')),
-    'Rose Gold on Black': ('#e0bfb8', '#000000',
-        _c('000000 8b4557 a05060 b55b69 ca6672 df717b e87c84 f0878d'),
-        _c('552233 6a2d3e 7f3849 944354 a94e5f be596a d36475 e86f80')),
-    'IBM VGA': ('#aaaaaa', '#000000',
-        _c('000000 0000aa 00aa00 00aaaa aa0000 aa00aa aa5500 aaaaaa'),
-        _c('555555 5555ff 55ff55 55ffff ff5555 ff55ff ffff55 ffffff')),
-    'Miku NT': ('#338296', '#1a1a1a',
-        _c('1a1a1a e43d82 89cdc6 338296 338296 e43d82 89cdc6 fef5f7'),
-        _c('3a3a3a f060a0 a0e0d8 4a9aad 4a9aad f060a0 a0e0d8 ffffff')),
-    'Eva Unit-00 (Prototype)': ('#ffc24a', '#2a1a05',
-        _c('1a1206 e35d3f a3a83c f0a500 6f8fb0 d98a6a 4fbfa8 ffd98a'),
-        _c('5c4520 ff7a55 d4d45a ffc94d 9db8d8 f0a67a 7fe0cc fff0c9')),
-    'Eva Unit-00 (Rei)': ('#b7dcff', '#0a1526',
-        _c('0d1620 e35d6a 78c6a3 e8b04b 7aa2f7 b8a6d9 66d9e8 d6e9ff'),
-        _c('3d4f63 ff8a95 9de0bf ffd27a a8c7e8 d4c5f0 8ff0ff f0f8ff')),
-    'Eva Unit-01 (Shinji)': ('#8aff5c', '#241030',
-        _c('1a1024 e05252 4de86b f2a33c 6d8bd8 a259ff 35e0d0 d7ffc2'),
-        _c('4a3b63 ff6b6b 8dff5a ffc857 8fa8ff c77dff 5ff2dc efffe4')),
-    'Eva Unit-02 (Asuka)': ('#ff8c42', '#350808',
-        _c('1a0b0b ff5252 a3c34a f28e2b 5b8dd6 e0559b 3fbfbf ffd9b8'),
-        _c('5c2a2a ff6b61 c4e06a ffb85c 7fb0f0 ff7cb8 5fe0d8 ffe9d4')),
-    'Strange Red': ('#ca6a6a', '#090404',
-        _c('090404 ca6a6a aa5050 7b3a3a 7b3a3a ca6a6a aa5050 ca6a6a'),
-        _c('2a1515 e08080 c06060 904848 904848 e08080 c06060 f0a0a0')),
-    'Burgundy on Black': ('#900020', '#000000',
-        _c('000000 900020 600018 700018 500010 a00028 800020 c00030'),
-        _c('300008 b00028 800020 900020 700018 c00030 a00028 e00038')),
-    'Win95 Teal': ('#008080', '#000000',
-        _c('000000 aa0000 00aa00 aa5500 0000aa aa00aa 00aaaa aaaaaa'),
-        _c('555555 5555ff 55ff55 55ffff ff5555 ff55ff ffff55 ffffff')),
-}
-
-PALETTES = {
-    'Nord': (
-        _c('3b4252 bf616a a3be8c ebcb8b 81a1c1 b48ead 88c0d0 e5e9f0'),
-        _c('4c566a bf616a a3be8c ebcb8b 81a1c1 b48ead 8fbcbb eceff4')),
-    'Gruvbox Dark': (
-        _c('282828 cc241d 98971a d79921 458588 b16286 689d6a a89984'),
-        _c('928374 fb4934 b8bb26 fabd2f 83a598 d3869b 8ec07c ebdbb2')),
-    'Gruvbox Light': (
-        _c('fbf1c7 cc241d 98971a d79921 458588 b16286 689d6a 7c6f64'),
-        _c('928374 9d0006 79740e b57614 076678 8f3f71 427b58 3c3836')),
-    'Catppuccin Latte': (
-        _c('5c5f77 d20f39 40a02b df8e1d 1e66f5 ea76cb 179299 acb0be'),
-        _c('6c6f85 d20f39 40a02b df8e1d 1e66f5 ea76cb 179299 bcc0cc')),
-    'Catppuccin Frappé': (
-        _c('626880 e78284 a6d189 e5c890 8caaee f4b8e4 81c8be a5adce'),
-        _c('737994 e78284 a6d189 e5c890 8caaee f4b8e4 81c8be b5bfe2')),
-    'Catppuccin Macchiato': (
-        _c('5b6078 ed8796 a6da95 eed49f 8aadf4 f5bde6 8bd5ca a5adcb'),
-        _c('6e738d ed8796 a6da95 eed49f 8aadf4 f5bde6 8bd5ca b8c0e0')),
-    'Catppuccin Mocha': (
-        _c('585b70 eba0ac a6e3a1 f9e2af 89b4fa f5c2e7 94e2d5 a6adc8'),
-        _c('7f849c eba0ac a6e3a1 f9e2af 89b4fa f5c2e7 94e2d5 bac2de')),
-    'Dracula': (
-        _c('21222c ff5555 50fa7b f1fa8c bd93f9 ff79c6 8be9fd f8f8f2'),
-        _c('6272a4 ff6e6e 69ff94 ffffa5 d6acff ff92df a4ffff ffffff')),
-    'Tokyo Night': (
-        _c('15161e f7768e 9ece6a e0af68 7aa2f7 bb9af7 7dcfff a9b1d6'),
-        _c('414868 f7768e 9ece6a e0af68 7aa2f7 bb9af7 7dcfff c0caf5')),
-    "Syntwave '84": (
-        _c('261f33 ff3838 3eff7a ffe43e 3e8bff ff3ed4 3effe0 f8f8f2'),
-        _c('4a3f5c ff5c5c 5cff9c ffff5c 5c9cff ff5cf0 5cffff ffffff')),
-    'Tango': (
-        _c('2e3436 cc0000 4e9a06 c4a000 3465a4 75507b 06989a d3d7cf'),
-        _c('555753 ef2929 8ae234 fce94f 729fcf ad7fa8 34e2e2 eeeeec')),
-    'Solarized Dark': (
-        _c('073642 dc322f 859900 b58900 268bd2 d33682 2aa198 eee8d5'),
-        _c('002b36 cb4b16 586e75 657b83 839496 6c71c4 93a1a1 fdf6e3')),
-    'Solarized Light': (
-        _c('073642 dc322f 859900 b58900 268bd2 d33682 2aa198 eee8d5'),
-        _c('002b36 cb4b16 586e75 657b83 839496 6c71c4 93a1a1 fdf6e3')),
-    'Monokai': (
-        _c('272822 f92672 a6e22e f4bf75 66d9ef ae81ff a1efe4 f8f8f2'),
-        _c('75715e f92672 a6e22e e6db74 66d9ef ae81ff a1efe4 f9f8f5')),
-}
+class ThemeFileError(Exception):
+    """Raised when a themes or palettes file is missing or malformed."""
 
 
-def _validate_tables():
-    for name, (fg, bg, normal, bright) in THEMES.items():
-        colors = (fg, bg) + normal + bright
-        if len(normal) != 8 or len(bright) != 8 or any(
-                not re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in colors):
-            raise ValueError("invalid color table for theme %r" % name)
-    for name, (normal, bright) in PALETTES.items():
-        if len(normal) != 8 or len(bright) != 8 or any(
-                not re.fullmatch(r"#[0-9a-fA-F]{6}", color) for color in normal + bright):
-            raise ValueError("invalid color table for palette %r" % name)
+def _data_directories():
+    """Directories searched for data files, most specific first."""
+    directories = [os.path.dirname(os.path.realpath(__file__))]
+    data_home = os.environ.get("XDG_DATA_HOME")
+    if not data_home:
+        data_home = os.path.join(os.path.expanduser("~"), ".local", "share")
+    directories.append(os.path.join(data_home, "kitty-care"))
+    directories.extend(("/usr/local/share/kitty-care", "/usr/share/kitty-care"))
+    return directories
 
 
-_validate_tables()
+def data_paths(name, env_var):
+    """Candidate paths for a data file, honoring the environment override."""
+    override = os.environ.get(env_var)
+    if override:
+        return [os.path.expanduser(override)]
+    return [os.path.join(directory, name) for directory in _data_directories()]
+
+
+def find_data_file(name, env_var):
+    paths = data_paths(name, env_var)
+    for path in paths:
+        if os.path.isfile(path):
+            return path
+    raise ThemeFileError(
+        "could not find %s; looked in:\n  %s" % (name, "\n  ".join(paths)))
+
+
+def _read_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError as error:
+        raise ThemeFileError("%s: %s" % (path, error))
+
+
+def _tables(text, source):
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ThemeFileError("%s: invalid TOML: %s" % (source, error))
+    for name, entry in data.items():
+        if not isinstance(entry, dict):
+            raise ThemeFileError("%s: %r must be a table" % (source, name))
+    return data
+
+
+def _hex_color(entry, key, source, name):
+    value = entry.get(key)
+    if not isinstance(value, str) or not HEX_COLOR.fullmatch(value):
+        raise ThemeFileError(
+            "%s: %r: %r must be a #rrggbb color" % (source, name, key))
+    return "#" + value[1:].lower()
+
+
+def _hex_colors(entry, key, source, name):
+    values = entry.get(key)
+    if not isinstance(values, list) or len(values) != 8:
+        raise ThemeFileError(
+            "%s: %r: %r must be a list of 8 colors" % (source, name, key))
+    colors = []
+    for value in values:
+        if not isinstance(value, str) or not HEX_COLOR.fullmatch(value):
+            raise ThemeFileError(
+                "%s: %r: %r contains invalid color %r" % (source, name, key, value))
+        colors.append("#" + value[1:].lower())
+    return tuple(colors)
+
+
+def parse_themes(text, source="<themes>"):
+    themes = {}
+    for name, entry in _tables(text, source).items():
+        themes[name] = (
+            _hex_color(entry, "foreground", source, name),
+            _hex_color(entry, "background", source, name),
+            _hex_colors(entry, "normal", source, name),
+            _hex_colors(entry, "bright", source, name),
+        )
+    if not themes:
+        raise ThemeFileError("%s: no themes defined" % source)
+    return themes
+
+
+def parse_palettes(text, source="<palettes>"):
+    palettes = {}
+    for name, entry in _tables(text, source).items():
+        palettes[name] = (
+            _hex_colors(entry, "normal", source, name),
+            _hex_colors(entry, "bright", source, name),
+        )
+    return palettes
+
+
+def load_themes(path=None):
+    path = path or find_data_file(THEMES_FILE, THEMES_ENV)
+    return parse_themes(_read_file(path), path)
+
+
+def load_palettes(path=None):
+    path = path or find_data_file(PALETTES_FILE, PALETTES_ENV)
+    return parse_palettes(_read_file(path), path)
+
+
+try:
+    THEMES = load_themes()
+    THEME_FILE_ERROR = None
+except ThemeFileError as error:
+    THEMES = {}
+    THEME_FILE_ERROR = error
+
+try:
+    PALETTES = load_palettes()
+    PALETTE_FILE_ERROR = None
+except ThemeFileError as error:
+    PALETTES = {}
+    PALETTE_FILE_ERROR = error
+
 
 THEME_NAMES = list(THEMES)
 PALETTE_NAMES = list(PALETTES)
@@ -640,6 +591,13 @@ def main(argv):
         print("kitty-care: unknown argument %r" % argv[1], file=sys.stderr)
         print("Usage: kitty-care [--help]", file=sys.stderr)
         return 2
+
+    errors = [error for error in (THEME_FILE_ERROR, PALETTE_FILE_ERROR)
+              if error is not None]
+    if errors:
+        for error in errors:
+            print("kitty-care: %s" % error, file=sys.stderr)
+        return 1
 
     print("kitty-care — Kitty Configuration Generator")
     print("==========================================")

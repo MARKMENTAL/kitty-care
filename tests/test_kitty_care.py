@@ -43,6 +43,8 @@ class EnvironmentTest(unittest.TestCase):
         os.environ["HOME"] = self.home
         os.environ.pop("XDG_CONFIG_HOME", None)
         os.environ.pop("KITTY_CONFIG_DIRECTORY", None)
+        os.environ.pop("KITTY_CARE_THEMES", None)
+        os.environ.pop("KITTY_CARE_PALETTES", None)
         kc._fonts = None
 
     def tearDown(self):
@@ -80,6 +82,115 @@ class TableTests(unittest.TestCase):
         for name, (normal, bright) in kc.PALETTES.items():
             self.assertEqual(len(normal), 8, name)
             self.assertEqual(len(bright), 8, name)
+
+
+VALID_THEME = """\
+["Test Theme"]
+foreground = "#AABBCC"
+background = "#112233"
+normal = ["#000000", "#AA0000", "#00AA00", "#AAAA00", "#0000AA", "#AA00AA", "#00AAAA", "#AAAAAA"]
+bright = ["#555555", "#FF5555", "#55FF55", "#FFFF55", "#5555FF", "#FF55FF", "#55FFFF", "#FFFFFF"]
+"""
+
+VALID_PALETTE = """\
+["Test Palette"]
+normal = ["#000000", "#AA0000", "#00AA00", "#AAAA00", "#0000AA", "#AA00AA", "#00AAAA", "#AAAAAA"]
+bright = ["#555555", "#FF5555", "#55FF55", "#FFFF55", "#5555FF", "#FF55FF", "#55FFFF", "#FFFFFF"]
+"""
+
+
+class ThemeFileTests(unittest.TestCase):
+    def test_valid_theme_is_lowercased_and_returns_tuples(self):
+        themes = kc.parse_themes(VALID_THEME)
+        self.assertEqual(list(themes), ["Test Theme"])
+        fg, bg, normal, bright = themes["Test Theme"]
+        self.assertEqual((fg, bg), ("#aabbcc", "#112233"))
+        self.assertEqual(normal[0], "#000000")
+        self.assertEqual(normal[1], "#aa0000")
+        self.assertEqual(bright[7], "#ffffff")
+        self.assertIsInstance(normal, tuple)
+        self.assertIsInstance(bright, tuple)
+
+    def test_invalid_toml_reports_source(self):
+        with self.assertRaises(kc.ThemeFileError) as caught:
+            kc.parse_themes("not toml =", "bad.toml")
+        self.assertIn("bad.toml", str(caught.exception))
+        self.assertIn("invalid TOML", str(caught.exception))
+
+    def test_wrong_color_count_is_rejected(self):
+        text = VALID_THEME.replace('"#FFFFFF"]', '"#FFFFFF", "#000000"]')
+        with self.assertRaises(kc.ThemeFileError) as caught:
+            kc.parse_themes(text)
+        self.assertIn("8 colors", str(caught.exception))
+
+    def test_invalid_hex_is_rejected(self):
+        text = VALID_THEME.replace('"#55FFFF"', '"#55FFF"')
+        with self.assertRaises(kc.ThemeFileError) as caught:
+            kc.parse_themes(text)
+        self.assertIn("invalid color", str(caught.exception))
+
+    def test_missing_foreground_is_rejected(self):
+        text = VALID_THEME.replace('foreground = "#AABBCC"\n', "")
+        with self.assertRaises(kc.ThemeFileError) as caught:
+            kc.parse_themes(text)
+        self.assertIn("foreground", str(caught.exception))
+
+    def test_theme_file_must_define_a_theme(self):
+        with self.assertRaises(kc.ThemeFileError) as caught:
+            kc.parse_themes("")
+        self.assertIn("no themes defined", str(caught.exception))
+
+
+class PaletteFileTests(unittest.TestCase):
+    def test_valid_palette_returns_tuples(self):
+        palettes = kc.parse_palettes(VALID_PALETTE)
+        self.assertEqual(list(palettes), ["Test Palette"])
+        normal, bright = palettes["Test Palette"]
+        self.assertEqual(len(normal), 8)
+        self.assertEqual(len(bright), 8)
+        self.assertEqual(normal[1], "#aa0000")
+        self.assertIsInstance(normal, tuple)
+        self.assertIsInstance(bright, tuple)
+
+    def test_empty_palette_file_is_allowed(self):
+        self.assertEqual(kc.parse_palettes(""), {})
+
+    def test_wrong_color_count_is_rejected(self):
+        text = VALID_PALETTE.replace('"#FFFFFF"]', '"#FFFFFF", "#000000"]')
+        with self.assertRaises(kc.ThemeFileError) as caught:
+            kc.parse_palettes(text)
+        self.assertIn("8 colors", str(caught.exception))
+
+    def test_invalid_hex_is_rejected(self):
+        text = VALID_PALETTE.replace('"#55FFFF"', '"#55FFF"')
+        with self.assertRaises(kc.ThemeFileError) as caught:
+            kc.parse_palettes(text)
+        self.assertIn("invalid color", str(caught.exception))
+
+
+class DataFileTests(EnvironmentTest):
+    def test_sibling_file_is_found_by_default(self):
+        expected = os.path.join(str(SCRIPT.parent), kc.THEMES_FILE)
+        self.assertEqual(
+            kc.find_data_file(kc.THEMES_FILE, kc.THEMES_ENV), expected)
+
+    def test_environment_override_wins(self):
+        custom = Path(self.home) / "custom-themes.toml"
+        custom.write_text(VALID_THEME)
+        os.environ[kc.THEMES_ENV] = str(custom)
+        self.assertEqual(
+            kc.find_data_file(kc.THEMES_FILE, kc.THEMES_ENV), str(custom))
+
+    def test_missing_file_lists_searched_paths(self):
+        target = Path(self.home) / "missing.toml"
+        os.environ[kc.THEMES_ENV] = str(target)
+        with self.assertRaises(kc.ThemeFileError) as caught:
+            kc.find_data_file(kc.THEMES_FILE, kc.THEMES_ENV)
+        self.assertIn(str(target), str(caught.exception))
+
+    def test_loaders_read_the_shipped_files(self):
+        self.assertEqual(len(kc.load_themes()), 38)
+        self.assertEqual(len(kc.load_palettes()), 14)
 
 
 class PathTests(EnvironmentTest):
@@ -306,6 +417,24 @@ class CliTests(EnvironmentTest):
         result = self.run_cli("--bogus")
         self.assertEqual(result.returncode, 2)
         self.assertIn("unknown argument", result.stderr)
+
+    def test_missing_theme_file_is_reported(self):
+        os.environ["KITTY_CARE_THEMES"] = str(Path(self.home) / "missing.toml")
+        result = self.run_cli(stdin="")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not find themes.toml", result.stderr)
+
+    def test_missing_palette_file_is_reported(self):
+        os.environ["KITTY_CARE_PALETTES"] = str(Path(self.home) / "missing.toml")
+        result = self.run_cli(stdin="")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not find ansi_palettes.toml", result.stderr)
+
+    def test_help_works_without_data_files(self):
+        os.environ["KITTY_CARE_THEMES"] = str(Path(self.home) / "missing.toml")
+        result = self.run_cli("--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Usage: kitty-care", result.stdout)
 
     def test_exit_from_menu(self):
         result = self.run_cli(stdin="8\n")
